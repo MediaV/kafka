@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -14,19 +14,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.streams.errors.TopologyBuilderException;
 import org.apache.kafka.streams.kstream.KStreamBuilder;
 import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.Predicate;
 import org.apache.kafka.streams.kstream.ValueJoiner;
 import org.apache.kafka.streams.kstream.ValueMapper;
+import org.apache.kafka.streams.processor.StateStoreSupplier;
 import org.apache.kafka.streams.processor.internals.SinkNode;
 import org.apache.kafka.streams.processor.internals.SourceNode;
+import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.test.KStreamTestDriver;
 import org.apache.kafka.test.MockAggregator;
 import org.apache.kafka.test.MockInitializer;
@@ -39,6 +41,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.io.File;
 import java.io.IOException;
 
@@ -113,9 +116,14 @@ public class KTableImplTest {
         driver = new KStreamTestDriver(builder, stateDir);
 
         driver.process(topic1, "A", "01");
+        driver.flushState();
         driver.process(topic1, "B", "02");
+        driver.flushState();
         driver.process(topic1, "C", "03");
+        driver.flushState();
         driver.process(topic1, "D", "04");
+        driver.flushState();
+        driver.flushState();
 
         assertEquals(Utils.mkList("A:01", "B:02", "C:03", "D:04"), proc1.processed);
         assertEquals(Utils.mkList("A:1", "B:2", "C:3", "D:4"), proc2.processed);
@@ -173,6 +181,7 @@ public class KTableImplTest {
         driver.process(topic1, "A", "01");
         driver.process(topic1, "B", "01");
         driver.process(topic1, "C", "01");
+        driver.flushState();
 
         assertEquals("01", getter1.get("A"));
         assertEquals("01", getter1.get("B"));
@@ -192,6 +201,7 @@ public class KTableImplTest {
 
         driver.process(topic1, "A", "02");
         driver.process(topic1, "B", "02");
+        driver.flushState();
 
         assertEquals("02", getter1.get("A"));
         assertEquals("02", getter1.get("B"));
@@ -210,6 +220,7 @@ public class KTableImplTest {
         assertEquals("01", getter4.get("C"));
 
         driver.process(topic1, "A", "03");
+        driver.flushState();
 
         assertEquals("03", getter1.get("A"));
         assertEquals("02", getter1.get("B"));
@@ -228,10 +239,12 @@ public class KTableImplTest {
         assertEquals("01", getter4.get("C"));
 
         driver.process(topic1, "A", null);
+        driver.flushState();
 
         assertNull(getter1.get("A"));
         assertEquals("02", getter1.get("B"));
         assertEquals("01", getter1.get("C"));
+
 
         assertNull(getter2.get("A"));
         assertEquals(new Integer(2), getter2.get("B"));
@@ -326,7 +339,7 @@ public class KTableImplTest {
     }
 
     @Test
-    public void testRepartition() throws IOException {
+    public void testRepartition() throws Exception {
         String topic1 = "topic1";
         String storeName1 = "storeName1";
 
@@ -337,7 +350,7 @@ public class KTableImplTest {
 
         KTableImpl<String, String, String> table1Aggregated = (KTableImpl<String, String, String>) table1
                 .groupBy(MockKeyValueMapper.<String, String>NoOpKeyValueMapper())
-                .aggregate(MockInitializer.STRING_INIT, MockAggregator.STRING_ADDER, MockAggregator.STRING_REMOVER, "mock-result1");
+                .aggregate(MockInitializer.STRING_INIT, MockAggregator.TOSTRING_ADDER, MockAggregator.TOSTRING_REMOVER, "mock-result1");
 
 
         KTableImpl<String, String, String> table1Reduced = (KTableImpl<String, String, String>) table1
@@ -356,10 +369,15 @@ public class KTableImplTest {
         assertTrue(driver.allProcessorNames().contains("KSTREAM-SINK-0000000007"));
         assertTrue(driver.allProcessorNames().contains("KSTREAM-SOURCE-0000000008"));
 
-        assertNotNull(((ChangedSerializer) ((SinkNode) driver.processor("KSTREAM-SINK-0000000003")).valueSerializer()).inner());
-        assertNotNull(((ChangedDeserializer) ((SourceNode) driver.processor("KSTREAM-SOURCE-0000000004")).valueDeserializer()).inner());
-        assertNotNull(((ChangedSerializer) ((SinkNode) driver.processor("KSTREAM-SINK-0000000007")).valueSerializer()).inner());
-        assertNotNull(((ChangedDeserializer) ((SourceNode) driver.processor("KSTREAM-SOURCE-0000000008")).valueDeserializer()).inner());
+        Field valSerializerField  = ((SinkNode) driver.processor("KSTREAM-SINK-0000000003")).getClass().getDeclaredField("valSerializer");
+        Field valDeserializerField  = ((SourceNode) driver.processor("KSTREAM-SOURCE-0000000004")).getClass().getDeclaredField("valDeserializer");
+        valSerializerField.setAccessible(true);
+        valDeserializerField.setAccessible(true);
+
+        assertNotNull(((ChangedSerializer) valSerializerField.get(driver.processor("KSTREAM-SINK-0000000003"))).inner());
+        assertNotNull(((ChangedDeserializer) valDeserializerField.get(driver.processor("KSTREAM-SOURCE-0000000004"))).inner());
+        assertNotNull(((ChangedSerializer) valSerializerField.get(driver.processor("KSTREAM-SINK-0000000007"))).inner());
+        assertNotNull(((ChangedDeserializer) valDeserializerField.get(driver.processor("KSTREAM-SOURCE-0000000008"))).inner());
     }
 
     @Test(expected = NullPointerException.class)
@@ -392,19 +410,24 @@ public class KTableImplTest {
         table.writeAsText(null);
     }
 
+    @Test(expected = TopologyBuilderException.class)
+    public void shouldNotAllowEmptyFilePathOnWriteAsText() throws Exception {
+        table.writeAsText("\t  \t");
+    }
+
     @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullActionOnForEach() throws Exception {
         table.foreach(null);
     }
 
     @Test(expected = NullPointerException.class)
-    public void shouldNotAllowNullTopicInThrough() throws Exception {
-        table.through(null, "store");
+    public void shouldAllowNullTopicInThrough() throws Exception {
+        table.through((String) null, "store");
     }
 
-    @Test(expected = NullPointerException.class)
-    public void shouldNotAllowNullStoreInThrough() throws Exception {
-        table.through("topic", null);
+    @Test
+    public void shouldAllowNullStoreInThrough() throws Exception {
+        table.through("topic", (String) null);
     }
 
     @Test(expected = NullPointerException.class)
@@ -414,7 +437,27 @@ public class KTableImplTest {
 
     @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnJoin() throws Exception {
-        table.join(null, MockValueJoiner.STRING_JOINER);
+        table.join(null, MockValueJoiner.TOSTRING_JOINER);
+    }
+
+    @Test
+    public void shouldAllowNullStoreInJoin() throws Exception {
+        table.join(table, MockValueJoiner.TOSTRING_JOINER, null, (String) null);
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void shouldNotAllowNullStoreSupplierInJoin() throws Exception {
+        table.join(table, MockValueJoiner.TOSTRING_JOINER, (StateStoreSupplier<KeyValueStore>) null);
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void shouldNotAllowNullStoreSupplierInLeftJoin() throws Exception {
+        table.leftJoin(table, MockValueJoiner.TOSTRING_JOINER, (StateStoreSupplier<KeyValueStore>) null);
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void shouldNotAllowNullStoreSupplierInOuterJoin() throws Exception {
+        table.outerJoin(table, MockValueJoiner.TOSTRING_JOINER, (StateStoreSupplier<KeyValueStore>) null);
     }
 
     @Test(expected = NullPointerException.class)
@@ -424,7 +467,7 @@ public class KTableImplTest {
 
     @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnOuterJoin() throws Exception {
-        table.outerJoin(null, MockValueJoiner.STRING_JOINER);
+        table.outerJoin(null, MockValueJoiner.TOSTRING_JOINER);
     }
 
     @Test(expected = NullPointerException.class)
@@ -439,7 +482,7 @@ public class KTableImplTest {
 
     @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnLeftJoin() throws Exception {
-        table.leftJoin(null, MockValueJoiner.STRING_JOINER);
+        table.leftJoin(null, MockValueJoiner.TOSTRING_JOINER);
     }
 
 }

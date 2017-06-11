@@ -25,9 +25,8 @@ import kafka.utils.TestUtils
 import org.easymock.EasyMock
 import org.junit.Assert._
 import org.junit.Test
-import org.scalatest.junit.JUnitSuite
 
-class ConsoleConsumerTest extends JUnitSuite {
+class ConsoleConsumerTest {
 
   @Test
   def shouldLimitReadsToMaxMessageLimit() {
@@ -89,7 +88,7 @@ class ConsoleConsumerTest extends JUnitSuite {
     val config = new ConsoleConsumer.ConsumerConfig(args)
 
     //Then
-    assertFalse(config.useNewConsumer)
+    assertTrue(config.useOldConsumer)
     assertEquals("localhost:2181", config.zkConnectionStr)
     assertEquals("test", config.topicArg)
     assertEquals(true, config.fromBeginning)
@@ -108,14 +107,14 @@ class ConsoleConsumerTest extends JUnitSuite {
     val config = new ConsoleConsumer.ConsumerConfig(args)
 
     //Then
-    assertTrue(config.useNewConsumer)
+    assertFalse(config.useOldConsumer)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(true, config.fromBeginning)
   }
 
   @Test
-  def shouldParseValidNewSimpleConsumerValidConfigWithNumericOffset() {
+  def shouldParseValidNewSimpleConsumerValidConfigWithNumericOffset(): Unit = {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -128,12 +127,28 @@ class ConsoleConsumerTest extends JUnitSuite {
     val config = new ConsoleConsumer.ConsumerConfig(args)
 
     //Then
-    assertTrue(config.useNewConsumer)
+    assertFalse(config.useOldConsumer)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
     assertEquals(3, config.offsetArg)
     assertEquals(false, config.fromBeginning)
+
+  }
+
+  @Test
+  def testDefaultConsumer() {
+    //Given
+    val args: Array[String] = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--from-beginning")
+
+    //When
+    val config = new ConsoleConsumer.ConsumerConfig(args)
+
+    //Then
+    assertFalse(config.useOldConsumer)
   }
 
   @Test
@@ -144,34 +159,36 @@ class ConsoleConsumerTest extends JUnitSuite {
       "--topic", "test",
       "--partition", "0",
       "--offset", "LatEst",
-      "--new-consumer") //new
+      "--new-consumer", //new
+      "--property", "print.value=false")
 
     //When
     val config = new ConsoleConsumer.ConsumerConfig(args)
 
     //Then
-    assertTrue(config.useNewConsumer)
+    assertFalse(config.useOldConsumer)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
     assertEquals(-1, config.offsetArg)
     assertEquals(false, config.fromBeginning)
+    assertEquals(false, config.formatter.asInstanceOf[DefaultMessageFormatter].printValue)
   }
 
   @Test
   def shouldParseConfigsFromFile() {
     val propsFile = TestUtils.tempFile()
     val propsStream = new FileOutputStream(propsFile)
-    propsStream.write("consumer.timeout.ms=1000".getBytes())
+    propsStream.write("request.timeout.ms=1000".getBytes())
     propsStream.close()
     val args: Array[String] = Array(
-      "--zookeeper", "localhost:2181",
+      "--bootstrap-server", "localhost:9092",
       "--topic", "test",
       "--consumer.config", propsFile.getAbsolutePath
     )
 
     val config = new ConsoleConsumer.ConsumerConfig(args)
 
-    assertEquals("1000", config.consumerProps.getProperty("consumer.timeout.ms"))
+    assertEquals("1000", config.consumerProps.getProperty("request.timeout.ms"))
   }
 }

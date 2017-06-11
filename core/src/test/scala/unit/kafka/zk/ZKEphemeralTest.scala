@@ -47,19 +47,18 @@ object ZKEphemeralTest {
 
 @RunWith(value = classOf[Parameterized])
 class ZKEphemeralTest(val secure: Boolean) extends ZooKeeperTestHarness {
-  val jaasFile = kafka.utils.JaasTestUtils.writeZkFile()
+  val jaasFile = kafka.utils.JaasTestUtils.writeJaasContextsToFile(kafka.utils.JaasTestUtils.zkSections)
   val authProvider = "zookeeper.authProvider.1"
   var zkSessionTimeoutMs = 1000
   
   @Before
   override def setUp() {
-    if(secure) {
+    if (secure) {
+      System.setProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM, jaasFile.getAbsolutePath)
       Configuration.setConfiguration(null)
-      System.setProperty(JaasUtils.JAVA_LOGIN_CONFIG_PARAM, jaasFile)
       System.setProperty(authProvider, "org.apache.zookeeper.server.auth.SASLAuthenticationProvider")
-      if(!JaasUtils.isZkSecurityEnabled()) {
+      if (!JaasUtils.isZkSecurityEnabled)
         fail("Secure access not enabled")
-     }
     }
     super.setUp
   }
@@ -80,7 +79,7 @@ class ZKEphemeralTest(val secure: Boolean) extends ZooKeeperTestHarness {
     try {
       zkUtils.createEphemeralPathExpectConflict("/tmp/zktest", "node created")
     } catch {                       
-      case e: Exception =>
+      case _: Exception =>
     }
 
     var testData: String = null
@@ -147,7 +146,7 @@ class ZKEphemeralTest(val secure: Boolean) extends ZooKeeperTestHarness {
         zwe.create()
         false
       } catch {
-        case e: ZkNodeExistsException => true
+        case _: ZkNodeExistsException => true
       }
     Assert.assertTrue(gotException)
     zkClient2.close()
@@ -155,7 +154,6 @@ class ZKEphemeralTest(val secure: Boolean) extends ZooKeeperTestHarness {
   
   /**
    * Tests if succeeds with znode from the same session
-   * 
    */
   @Test
   def testSameSession = {
@@ -171,7 +169,7 @@ class ZKEphemeralTest(val secure: Boolean) extends ZooKeeperTestHarness {
         zwe.create()
         false
       } catch {
-        case e: ZkNodeExistsException => true
+        case _: ZkNodeExistsException => true
       }
     Assert.assertFalse(gotException)
   }

@@ -17,11 +17,12 @@
 
 package kafka.consumer
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import kafka.utils.{ZkUtils, Logging}
-import org.I0Itec.zkclient.{IZkStateListener, IZkChildListener, ZkClient}
+import org.I0Itec.zkclient.{IZkStateListener, IZkChildListener}
 import org.apache.zookeeper.Watcher.Event.KeeperState
 
+@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class ZookeeperTopicEventWatcher(val zkUtils: ZkUtils,
     val eventHandler: TopicEventHandler[String]) extends Logging {
 
@@ -37,7 +38,7 @@ class ZookeeperTopicEventWatcher(val zkUtils: ZkUtils,
       new ZkSessionExpireListener(topicEventListener))
 
     val topics = zkUtils.zkClient.subscribeChildChanges(
-      ZkUtils.BrokerTopicsPath, topicEventListener).toList
+      ZkUtils.BrokerTopicsPath, topicEventListener)
 
     // call to bootstrap topic list
     topicEventListener.handleChildChange(ZkUtils.BrokerTopicsPath, topics)
@@ -59,12 +60,12 @@ class ZookeeperTopicEventWatcher(val zkUtils: ZkUtils,
 
   class ZkTopicEventListener extends IZkChildListener {
 
-    @throws(classOf[Exception])
+    @throws[Exception]
     def handleChildChange(parent: String, children: java.util.List[String]) {
       lock.synchronized {
         try {
           if (zkUtils != null) {
-            val latestTopics = zkUtils.zkClient.getChildren(ZkUtils.BrokerTopicsPath).toList
+            val latestTopics = zkUtils.zkClient.getChildren(ZkUtils.BrokerTopicsPath).asScala
             debug("all topics: %s".format(latestTopics))
             eventHandler.handleTopicEvent(latestTopics)
           }
@@ -81,10 +82,10 @@ class ZookeeperTopicEventWatcher(val zkUtils: ZkUtils,
   class ZkSessionExpireListener(val topicEventListener: ZkTopicEventListener)
     extends IZkStateListener {
 
-    @throws(classOf[Exception])
+    @throws[Exception]
     def handleStateChanged(state: KeeperState) { }
 
-    @throws(classOf[Exception])
+    @throws[Exception]
     def handleNewSession() {
       lock.synchronized {
         if (zkUtils != null) {

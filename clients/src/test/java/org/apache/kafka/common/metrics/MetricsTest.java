@@ -1,14 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE
- * file distributed with this work for additional information regarding copyright ownership. The ASF licenses this file
- * to You under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
- * License. You may obtain a copy of the License at
- * 
- * http://www.apache.org/licenses/LICENSE-2.0
- * 
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.apache.kafka.common.metrics;
 
@@ -35,6 +39,7 @@ import org.apache.kafka.common.metrics.stats.Percentiles;
 import org.apache.kafka.common.metrics.stats.Percentiles.BucketSizing;
 import org.apache.kafka.common.metrics.stats.Rate;
 import org.apache.kafka.common.metrics.stats.Total;
+import org.apache.kafka.common.metrics.stats.SimpleRate;
 import org.apache.kafka.common.utils.MockTime;
 import org.junit.After;
 import org.junit.Before;
@@ -419,6 +424,14 @@ public class MetricsTest {
         assertEquals(0.0, p25.value(), 1.0);
         assertEquals(0.0, p50.value(), 1.0);
         assertEquals(0.0, p75.value(), 1.0);
+
+        // record two more windows worth of sequential values
+        for (int i = 0; i < buckets; i++)
+            sensor.record(i);
+
+        assertEquals(25, p25.value(), 1.0);
+        assertEquals(50, p50.value(), 1.0);
+        assertEquals(75, p75.value(), 1.0);
     }
 
     @Test
@@ -458,5 +471,117 @@ public class MetricsTest {
         }
 
     }
+
+    @Test
+    public void testSimpleRate() {
+        SimpleRate rate = new SimpleRate();
+
+        //Given
+        MetricConfig config = new MetricConfig().timeWindow(1, TimeUnit.SECONDS).samples(10);
+
+        //In the first window the rate is a fraction of the whole (1s) window
+        //So when we record 1000 at t0, the rate should be 1000 until the window completes, or more data is recorded.
+        record(rate, config, 1000);
+        assertEquals(1000, measure(rate, config), 0);
+        time.sleep(100);
+        assertEquals(1000, measure(rate, config), 0); // 1000B / 0.1s
+        time.sleep(100);
+        assertEquals(1000, measure(rate, config), 0); // 1000B / 0.2s
+        time.sleep(200);
+        assertEquals(1000, measure(rate, config), 0); // 1000B / 0.4s
+
+        //In the second (and subsequent) window(s), the rate will be in proportion to the elapsed time
+        //So the rate will degrade over time, as the time between measurement and the initial recording grows.
+        time.sleep(600);
+        assertEquals(1000, measure(rate, config), 0); // 1000B / 1.0s
+        time.sleep(200);
+        assertEquals(1000 / 1.2, measure(rate, config), 0); // 1000B / 1.2s
+        time.sleep(200);
+        assertEquals(1000 / 1.4, measure(rate, config), 0); // 1000B / 1.4s
+
+        //Adding another value, inside the same window should double the rate
+        record(rate, config, 1000);
+        assertEquals(2000 / 1.4, measure(rate, config), 0); // 2000B / 1.4s
+
+        //Going over the next window, should not change behaviour
+        time.sleep(1100);
+        assertEquals(2000 / 2.5, measure(rate, config), 0); // 2000B / 2.5s
+        record(rate, config, 1000);
+        assertEquals(3000 / 2.5, measure(rate, config), 0); // 3000B / 2.5s
+
+        //Sleeping for another 6.5 windows also should be the same
+        time.sleep(6500);
+        assertEquals(3000 / 9, measure(rate, config), 1); // 3000B / 9s
+        record(rate, config, 1000);
+        assertEquals(4000 / 9, measure(rate, config), 1); // 4000B / 9s
+
+        //Going over the 10 window boundary should cause the first window's values (1000) will be purged.
+        //So the rate is calculated based on the oldest reading, which is inside the second window, at 1.4s
+        time.sleep(1500);
+        assertEquals((4000 - 1000) / (10.5 - 1.4), measure(rate, config), 1);
+        record(rate, config, 1000);
+        assertEquals((5000 - 1000) / (10.5 - 1.4), measure(rate, config), 1);
+    }
+
+    private void record(Rate rate, MetricConfig config, int value) {
+        rate.record(config, value, time.milliseconds());
+    }
+
+    private Double measure(Measurable rate, MetricConfig config) {
+        return rate.measure(config, time.milliseconds());
+    }
+    
+    @Test
+    public void testMetricInstances() {
+        MetricName n1 = metrics.metricInstance(SampleMetrics.METRIC1, "key1", "value1", "key2", "value2");
+        Map<String, String> tags = new HashMap<String, String>();
+        tags.put("key1", "value1");
+        tags.put("key2", "value2");
+        MetricName n2 = metrics.metricInstance(SampleMetrics.METRIC2, tags);
+        assertEquals("metric names created in two different ways should be equal", n1, n2);
+
+        try {
+            metrics.metricInstance(SampleMetrics.METRIC1, "key1");
+            fail("Creating MetricName with an odd number of keyValue should fail");
+        } catch (IllegalArgumentException e) {
+            // this is expected
+        }
+        
+        Map<String, String> parentTagsWithValues = new HashMap<>();
+        parentTagsWithValues.put("parent-tag", "parent-tag-value");
+
+        Map<String, String> childTagsWithValues = new HashMap<>();
+        childTagsWithValues.put("child-tag", "child-tag-value");
+
+        try (Metrics inherited = new Metrics(new MetricConfig().tags(parentTagsWithValues), Arrays.asList((MetricsReporter) new JmxReporter()), time, true)) {
+            MetricName inheritedMetric = inherited.metricInstance(SampleMetrics.METRIC_WITH_INHERITED_TAGS, childTagsWithValues);
+
+            Map<String, String> filledOutTags = inheritedMetric.tags();
+            assertEquals("parent-tag should be set properly", filledOutTags.get("parent-tag"), "parent-tag-value");
+            assertEquals("child-tag should be set properly", filledOutTags.get("child-tag"), "child-tag-value");
+
+            try {
+                inherited.metricInstance(SampleMetrics.METRIC_WITH_INHERITED_TAGS, parentTagsWithValues);
+                fail("Creating MetricName should fail if the child metrics are not defined at runtime");
+            } catch (IllegalArgumentException e) {
+                // this is expected
+            }
+
+            try {
+
+                Map<String, String> runtimeTags = new HashMap<>();
+                runtimeTags.put("child-tag", "child-tag-value");
+                runtimeTags.put("tag-not-in-template", "unexpected-value");
+
+                inherited.metricInstance(SampleMetrics.METRIC_WITH_INHERITED_TAGS, runtimeTags);
+                fail("Creating MetricName should fail if there is a tag at runtime that is not in the template");
+            } catch (IllegalArgumentException e) {
+                // this is expected
+            }
+        }
+
+    }
+
+    
 
 }

@@ -1,18 +1,23 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE
- * file distributed with this work for additional information regarding copyright ownership. The ASF licenses this file
- * to You under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
- * License. You may obtain a copy of the License at
- * 
- * http://www.apache.org/licenses/LICENSE-2.0
- * 
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.apache.kafka.clients;
 
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -27,13 +32,14 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
  * A class encapsulating some of the logic around metadata.
  * <p>
  * This class is shared by the client thread (for partitioning) and the background sender thread.
- * 
+ *
  * Metadata is maintained for only a subset of topics, which can be added to over time. When we request metadata for a
  * topic we don't have any metadata for it will trigger a metadata update.
  * <p>
@@ -58,18 +64,13 @@ public final class Metadata {
     /* Topics with expiry time */
     private final Map<String, Long> topics;
     private final List<Listener> listeners;
+    private final ClusterResourceListeners clusterResourceListeners;
     private boolean needMetadataForAllTopics;
+    private final boolean allowAutoTopicCreation;
     private final boolean topicExpiryEnabled;
 
-    /**
-     * Create a metadata instance with reasonable defaults
-     */
-    public Metadata() {
-        this(100L, 60 * 60 * 1000L);
-    }
-
-    public Metadata(long refreshBackoffMs, long metadataExpireMs) {
-        this(refreshBackoffMs, metadataExpireMs, false);
+    public Metadata(long refreshBackoffMs, long metadataExpireMs, boolean allowAutoTopicCreation) {
+        this(refreshBackoffMs, metadataExpireMs, allowAutoTopicCreation, false, new ClusterResourceListeners());
     }
 
     /**
@@ -77,11 +78,16 @@ public final class Metadata {
      * @param refreshBackoffMs The minimum amount of time that must expire between metadata refreshes to avoid busy
      *        polling
      * @param metadataExpireMs The maximum amount of time that metadata can be retained without refresh
+     * @param allowAutoTopicCreation If this and the broker config 'auto.create.topics.enable' are true, topics that
+     *                               don't exist will be created by the broker when a metadata request is sent
      * @param topicExpiryEnabled If true, enable expiry of unused topics
+     * @param clusterResourceListeners List of ClusterResourceListeners which will receive metadata updates.
      */
-    public Metadata(long refreshBackoffMs, long metadataExpireMs, boolean topicExpiryEnabled) {
+    public Metadata(long refreshBackoffMs, long metadataExpireMs, boolean allowAutoTopicCreation,
+                    boolean topicExpiryEnabled, ClusterResourceListeners clusterResourceListeners) {
         this.refreshBackoffMs = refreshBackoffMs;
         this.metadataExpireMs = metadataExpireMs;
+        this.allowAutoTopicCreation = allowAutoTopicCreation;
         this.topicExpiryEnabled = topicExpiryEnabled;
         this.lastRefreshMs = 0L;
         this.lastSuccessfulRefreshMs = 0L;
@@ -90,6 +96,7 @@ public final class Metadata {
         this.needUpdate = false;
         this.topics = new HashMap<>();
         this.listeners = new ArrayList<>();
+        this.clusterResourceListeners = clusterResourceListeners;
         this.needMetadataForAllTopics = false;
     }
 
@@ -105,7 +112,9 @@ public final class Metadata {
      * will be reset on the next update.
      */
     public synchronized void add(String topic) {
-        topics.put(topic, TOPIC_EXPIRY_NEEDS_UPDATE);
+        if (topics.put(topic, TOPIC_EXPIRY_NEEDS_UPDATE) == null) {
+            requestUpdateForNewTopics();
+        }
     }
 
     /**
@@ -161,8 +170,9 @@ public final class Metadata {
      * @param topics
      */
     public synchronized void setTopics(Collection<String> topics) {
-        if (!this.topics.keySet().containsAll(topics))
-            requestUpdate();
+        if (!this.topics.keySet().containsAll(topics)) {
+            requestUpdateForNewTopics();
+        }
         this.topics.clear();
         for (String topic : topics)
             this.topics.put(topic, TOPIC_EXPIRY_NEEDS_UPDATE);
@@ -187,8 +197,15 @@ public final class Metadata {
     /**
      * Updates the cluster metadata. If topic expiry is enabled, expiry time
      * is set for topics if required and expired topics are removed from the metadata.
+     *
+     * @param cluster the cluster containing metadata for topics with valid metadata
+     * @param unavailableTopics topics which are non-existent or have one or more partitions whose
+     *        leader is not known
+     * @param now current time in milliseconds
      */
-    public synchronized void update(Cluster cluster, long now) {
+    public synchronized void update(Cluster cluster, Set<String> unavailableTopics, long now) {
+        Objects.requireNonNull(cluster, "cluster should not be null");
+
         this.needUpdate = false;
         this.lastRefreshMs = now;
         this.lastSuccessfulRefreshMs = now;
@@ -209,8 +226,9 @@ public final class Metadata {
         }
 
         for (Listener listener: listeners)
-            listener.onMetadataUpdate(cluster);
+            listener.onMetadataUpdate(cluster, unavailableTopics);
 
+        String previousClusterId = cluster.clusterResource().clusterId();
 
         if (this.needMetadataForAllTopics) {
             // the listener may change the interested topics, which could cause another metadata refresh.
@@ -219,6 +237,14 @@ public final class Metadata {
             this.cluster = getClusterForCurrentTopics(cluster);
         } else {
             this.cluster = cluster;
+        }
+
+        // The bootstrap cluster is guaranteed not to have any useful information
+        if (!cluster.isBootstrapConfigured()) {
+            String clusterId = cluster.clusterResource().clusterId();
+            if (clusterId == null ? previousClusterId != null : !clusterId.equals(previousClusterId))
+                log.info("Cluster ID: {}", cluster.clusterResource().clusterId());
+            clusterResourceListeners.onUpdate(cluster.clusterResource());
         }
 
         notifyAll();
@@ -232,7 +258,7 @@ public final class Metadata {
     public synchronized void failedUpdate(long now) {
         this.lastRefreshMs = now;
     }
-    
+
     /**
      * @return The current metadata version
      */
@@ -247,11 +273,8 @@ public final class Metadata {
         return this.lastSuccessfulRefreshMs;
     }
 
-    /**
-     * The metadata refresh backoff in ms
-     */
-    public long refreshBackoff() {
-        return refreshBackoffMs;
+    public boolean allowAutoTopicCreation() {
+        return allowAutoTopicCreation;
     }
 
     /**
@@ -259,6 +282,9 @@ public final class Metadata {
      * @param needMetadataForAllTopics boolean indicating need for metadata of all topics in cluster.
      */
     public synchronized void needMetadataForAllTopics(boolean needMetadataForAllTopics) {
+        if (needMetadataForAllTopics && !this.needMetadataForAllTopics) {
+            requestUpdateForNewTopics();
+        }
         this.needMetadataForAllTopics = needMetadataForAllTopics;
     }
 
@@ -287,7 +313,20 @@ public final class Metadata {
      * MetadataUpdate Listener
      */
     public interface Listener {
-        void onMetadataUpdate(Cluster cluster);
+        /**
+         * Callback invoked on metadata update.
+         *
+         * @param cluster the cluster containing metadata for topics with valid metadata
+         * @param unavailableTopics topics which are non-existent or have one or more partitions whose
+         *        leader is not known
+         */
+        void onMetadataUpdate(Cluster cluster, Set<String> unavailableTopics);
+    }
+
+    private synchronized void requestUpdateForNewTopics() {
+        // Override the timestamp of last refresh to let immediate update.
+        this.lastRefreshMs = 0;
+        requestUpdate();
     }
 
     private Cluster getClusterForCurrentTopics(Cluster cluster) {
@@ -295,19 +334,23 @@ public final class Metadata {
         Collection<PartitionInfo> partitionInfos = new ArrayList<>();
         List<Node> nodes = Collections.emptyList();
         Set<String> internalTopics = Collections.emptySet();
+        Node controller = null;
+        String clusterId = null;
         if (cluster != null) {
+            clusterId = cluster.clusterResource().clusterId();
             internalTopics = cluster.internalTopics();
             unauthorizedTopics.addAll(cluster.unauthorizedTopics());
             unauthorizedTopics.retainAll(this.topics.keySet());
 
             for (String topic : this.topics.keySet()) {
                 List<PartitionInfo> partitionInfoList = cluster.partitionsForTopic(topic);
-                if (partitionInfoList != null) {
+                if (!partitionInfoList.isEmpty()) {
                     partitionInfos.addAll(partitionInfoList);
                 }
             }
             nodes = cluster.nodes();
+            controller  = cluster.controller();
         }
-        return new Cluster(nodes, partitionInfos, unauthorizedTopics, internalTopics);
+        return new Cluster(clusterId, nodes, partitionInfos, unauthorizedTopics, internalTopics, controller);
     }
 }

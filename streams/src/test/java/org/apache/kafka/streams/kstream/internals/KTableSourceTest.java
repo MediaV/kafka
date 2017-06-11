@@ -1,10 +1,10 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * the License. You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.common.serialization.Serde;
@@ -69,13 +68,14 @@ public class KTableSourceTest {
         table1.toStream().process(proc1);
 
         driver = new KStreamTestDriver(builder, stateDir);
-
         driver.process(topic1, "A", 1);
         driver.process(topic1, "B", 2);
         driver.process(topic1, "C", 3);
         driver.process(topic1, "D", 4);
+        driver.flushState();
         driver.process(topic1, "A", null);
         driver.process(topic1, "B", null);
+        driver.flushState();
 
         assertEquals(Utils.mkList("A:1", "B:2", "C:3", "D:4", "A:null", "B:null"), proc1.processed);
     }
@@ -91,7 +91,6 @@ public class KTableSourceTest {
         KTableValueGetterSupplier<String, String> getterSupplier1 = table1.valueGetterSupplier();
 
         driver = new KStreamTestDriver(builder, stateDir, null, null);
-
         KTableValueGetter<String, String> getter1 = getterSupplier1.get();
         getter1.init(driver.context());
 
@@ -138,24 +137,27 @@ public class KTableSourceTest {
         builder.addProcessor("proc1", proc1, table1.name);
 
         driver = new KStreamTestDriver(builder, stateDir, null, null);
-
         driver.process(topic1, "A", "01");
         driver.process(topic1, "B", "01");
         driver.process(topic1, "C", "01");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(01<-null)", "B:(01<-null)", "C:(01<-null)");
 
         driver.process(topic1, "A", "02");
         driver.process(topic1, "B", "02");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(02<-null)", "B:(02<-null)");
 
         driver.process(topic1, "A", "03");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(03<-null)");
 
         driver.process(topic1, "A", null);
         driver.process(topic1, "B", null);
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(null<-null)", "B:(null<-null)");
     }
@@ -181,20 +183,24 @@ public class KTableSourceTest {
         driver.process(topic1, "A", "01");
         driver.process(topic1, "B", "01");
         driver.process(topic1, "C", "01");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(01<-null)", "B:(01<-null)", "C:(01<-null)");
 
         driver.process(topic1, "A", "02");
         driver.process(topic1, "B", "02");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(02<-01)", "B:(02<-01)");
 
         driver.process(topic1, "A", "03");
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(03<-02)");
 
         driver.process(topic1, "A", null);
         driver.process(topic1, "B", null);
+        driver.flushState();
 
         proc1.checkAndClearProcessResult("A:(null<-03)", "B:(null<-02)");
     }
