@@ -68,6 +68,7 @@ class DefaultEventHandler[K,V](config: ProducerConfig,
     var remainingRetries = config.messageSendMaxRetries + 1
     val correlationIdStart = correlationId.get()
     debug("Handling %d events".format(events.size))
+    sendPartitionPerTopicCache.clear();
     while (remainingRetries > 0 && outstandingProduceRequests.nonEmpty) {
       topicMetadataToRefresh ++= outstandingProduceRequests.map(_.topic)
       if (topicMetadataRefreshInterval >= 0 &&
